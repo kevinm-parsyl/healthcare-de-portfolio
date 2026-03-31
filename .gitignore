@@ -13,3 +13,4 @@ logs/
 .DS_Store
 synthea-with-dependencies.jar
 output/
+.vscode/
