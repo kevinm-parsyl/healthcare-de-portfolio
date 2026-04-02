@@ -1,0 +1,15 @@
+version: 2
+
+sources:
+  - name: raw
+    database: HEALTHCARE_DEV
+    schema: RAW
+    tables:
+      - name: bundle
+        description: "Raw FHIR R4 patient bundles loaded via COPY INTO"
+      - name: organization
+        description: "Raw FHIR R4 organization/facility bundles"
+      - name: practitioner
+        description: "Raw FHIR R4 practitioner bundles"
+      - name: load_manifest
+        description: "Batch-level ingestion audit log"
