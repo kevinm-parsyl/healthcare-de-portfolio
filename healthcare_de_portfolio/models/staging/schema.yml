@@ -1,0 +1,159 @@
+version: 2
+
+models:
+  - name: stg_patient
+    description: "Flattened FHIR R4 Patient resources from raw bundles. One row per patient."
+    columns:
+      - name: patient_id
+        description: "FHIR resource id. Primary key."
+        tests:
+          - unique:
+              severity: error
+          - not_null:
+              severity: error
+
+      - name: birth_date
+        description: "Patient date of birth."
+        tests:
+          - not_null:
+              severity: warn
+
+      - name: gender
+        description: "Administrative gender from FHIR."
+        tests:
+          - accepted_values:
+              values: ['male', 'female', 'other', 'unknown']
+              severity: warn
+
+      - name: source_filename
+        tests:
+          - not_null:
+              severity: error
+
+  - name: stg_encounter
+    description: "Flattened FHIR R4 Encounter resources. One row per encounter."
+    columns:
+      - name: encounter_id
+        description: "FHIR resource id. Primary key."
+        tests:
+          - unique:
+              severity: error
+          - not_null:
+              severity: error
+
+      - name: patient_id
+        description: "Foreign key to stg_patient."
+        tests:
+          - not_null:
+              severity: error
+          - relationships:
+              to: ref('stg_patient')
+              field: patient_id
+              severity: warn
+
+      - name: status
+        tests:
+          - not_null:
+              severity: error
+          - accepted_values:
+              values: ['finished', 'in-progress', 'cancelled', 'entered-in-error',
+                       'planned', 'arrived', 'triaged', 'onleave', 'unknown']
+              severity: warn
+
+      - name: encounter_class_code
+        tests:
+          - not_null:
+              severity: warn
+          - accepted_values:
+              values: ['AMB', 'EMER', 'IMP', 'OBSENC', 'EMER ', 'VR', 'HH', 'PRENC']
+              severity: warn
+
+      - name: encounter_start
+        tests:
+          - not_null:
+              severity: warn
+
+  - name: stg_condition
+    description: "Flattened FHIR R4 Condition resources. One row per condition record."
+    columns:
+      - name: condition_id
+        tests:
+          - unique:
+              severity: error
+          - not_null:
+              severity: error
+
+      - name: patient_id
+        tests:
+          - not_null:
+              severity: error
+          - relationships:
+              to: ref('stg_patient')
+              field: patient_id
+              severity: warn
+
+      - name: clinical_status
+        tests:
+          - accepted_values:
+              values: ['active', 'recurrence', 'relapse', 'inactive',
+                       'remission', 'resolved']
+              severity: warn
+
+      - name: verification_status
+        tests:
+          - accepted_values:
+              values: ['unconfirmed', 'provisional', 'differential',
+                       'confirmed', 'refuted', 'entered-in-error']
+              severity: warn
+
+  - name: stg_observation
+    description: "Flattened FHIR R4 Observation resources. One row per observation."
+    columns:
+      - name: observation_id
+        tests:
+          - unique:
+              severity: error
+          - not_null:
+              severity: error
+
+      - name: patient_id
+        tests:
+          - not_null:
+              severity: error
+          - relationships:
+              to: ref('stg_patient')
+              field: patient_id
+              severity: warn
+
+      - name: status
+        tests:
+          - accepted_values:
+              values: ['registered', 'preliminary', 'final', 'amended',
+                       'corrected', 'cancelled', 'entered-in-error', 'unknown']
+              severity: warn
+
+  - name: stg_medication_request
+    description: "Flattened FHIR R4 MedicationRequest resources. One row per prescription."
+    columns:
+      - name: medication_request_id
+        tests:
+          - unique:
+              severity: error
+          - not_null:
+              severity: error
+
+      - name: patient_id
+        tests:
+          - not_null:
+              severity: error
+          - relationships:
+              to: ref('stg_patient')
+              field: patient_id
+              severity: warn
+
+      - name: status
+        tests:
+          - accepted_values:
+              values: ['active', 'on-hold', 'cancelled', 'completed',
+                       'entered-in-error', 'stopped', 'draft', 'unknown']
+              severity: warn
