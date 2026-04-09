@@ -1,9 +1,9 @@
 # Architecture Decision Record
 ## Healthcare DE Portfolio — Project 1
 
-**Author:** Kevin McCreery  
-**Stack:** Snowflake, dbt Core, Python, Synthea FHIR R4  
-**Date:** April 2026
+**Author:** Kevin McCreery
+**Stack:** Snowflake, dbt Core, Python, Synthea FHIR R4
+**Last updated:** April 2026
 
 ---
 
@@ -22,65 +22,54 @@ A healthcare data engineering portfolio demonstrating FHIR R4 ingestion, dimensi
 **Decision:** Load each FHIR bundle as one row in `RAW.BUNDLE` with the full JSON stored in a Snowflake VARIANT column. All decomposition happens downstream in dbt.
 
 **Alternatives considered:**
-- Pre-parse bundles in Python before loading (rejected — moves compute to local machine, duplicates logic between Python and dbt, loses raw fidelity)
-- Separate raw tables per resource type (rejected — requires parsing before landing, violates raw layer immutability principle)
+- Pre-parse bundles in Python before loading (rejected — moves compute to local machine, duplicates logic, loses raw fidelity)
+- Separate raw tables per resource type (rejected — requires parsing before landing, violates raw layer immutability)
 
-**Rationale:** Snowflake's VARIANT type and LATERAL FLATTEN make decomposition efficient at query time. Landing raw bundles preserves the original data for reprocessing. All compute stays in Snowflake where it can scale independently of storage.
+**Rationale:** Snowflake's VARIANT type and LATERAL FLATTEN make decomposition efficient at query time. Landing raw bundles preserves the original data for reprocessing. All compute stays in Snowflake where it scales independently of storage.
 
-**Tradeoff:** Staging model queries are slower because LATERAL FLATTEN re-executes on every query. Mitigated by materializing mart models as tables.
+**Tradeoff:** Staging model queries re-execute LATERAL FLATTEN on every access. Mitigated by materializing mart models as tables.
 
 ---
 
 ## ADR-002: Three Purpose-Specific Stages
 
-**Decision:** Three Snowflake internal stages — `FHIR_PATIENT_STAGE`, `FHIR_ORGANIZATION_STAGE`, `FHIR_PRACTITIONER_STAGE` — rather than one combined stage.
+**Decision:** Three Snowflake internal stages — `FHIR_PATIENT_STAGE`, `FHIR_ORGANIZATION_STAGE`, `FHIR_PRACTITIONER_STAGE`.
 
-**Alternatives considered:**
-- Single stage with PATTERN filtering in COPY INTO (rejected — conflates different resource types with different update frequencies and consumers)
-
-**Rationale:** Mirrors real-world FHIR data contracts where different resource types arrive from different sources on different schedules. Organization and practitioner data changes rarely; patient bundles arrive continuously. Separating stages makes the pipeline's dependency order explicit and maps cleanly to FHIR R5 topic-based subscriptions (Project 2).
+**Rationale:** Mirrors real-world FHIR data contracts. Different resource types have different update frequencies and consumers. Maps cleanly to FHIR R5 topic-based subscriptions (Project 2).
 
 ---
 
 ## ADR-003: Lightweight Load Manifest
 
-**Decision:** `RAW.LOAD_MANIFEST` tracks batch-level operational metadata only — file count, total bytes, rows loaded/rejected, status, error message. No per-file tracking, no checksums.
+**Decision:** `RAW.LOAD_MANIFEST` tracks batch-level operational metadata only. No per-file tracking, no checksums.
 
-**Alternatives considered:**
-- Heavy manifest with per-file tracking and pre-extracted business metadata (rejected — duplicates what Snowflake's COPY_HISTORY already tracks, adds failure surface, violates single responsibility)
-- No manifest at all (rejected — loses operational audit trail not captured by Snowflake natively)
+**Rationale:** Snowflake's `INFORMATION_SCHEMA.COPY_HISTORY` already tracks per-file load status. Manifest owns what Snowflake doesn't: batch identity, business-level counts, pipeline status. `load_id` designed to become Airflow run ID in Project 2.
 
-**Rationale:** Snowflake's `INFORMATION_SCHEMA.COPY_HISTORY` already tracks per-file load status. The manifest owns what Snowflake doesn't: batch identity (`load_id`), business-level counts, and pipeline status for Airflow integration in Project 2. `load_id` will become the Airflow run ID in Project 2 — designed for that transition.
-
-**Known limitation:** `datetime_received` represents load time, not true file arrival time. True arrival time would require a pre-load manifest write from the Python pipeline, which adds complexity not justified for this project.
+**Known limitation:** `datetime_received` represents load time, not true file arrival time.
 
 ---
 
-## ADR-004: dbt Staging Models as Views, Mart Models as Tables
+## ADR-004: dbt Staging Views, Mart Tables
 
-**Decision:** Staging models materialized as views, mart models as tables.
+**Decision:** Staging models as views, mart models as tables.
 
-**Rationale:** Staging models are intermediate — they exist to feed mart models, not to be queried directly. Views have zero storage cost. Mart models are queried repeatedly by dashboards; materializing them pays for itself in query performance.
+**Rationale:** Staging models feed mart models, not dashboards. Views have zero storage cost. Mart models queried repeatedly by Looker Studio — materialization pays for itself.
 
-**Known limitation:** Staging view queries re-execute LATERAL FLATTEN across 34K bundles on every access. `stg_patient` specifically takes ~70 seconds to query because of nested extension handling. In production with higher data volumes, staging models should be converted to incremental tables.
-
-**Exception:** `stg_patient` was initially attempted as a view but required table materialization during development due to a Snowflake correlated subquery limitation in views. This was later resolved by rewriting to comma-syntax LATERAL FLATTEN, and `stg_patient` was reverted to view materialization.
+**Known limitation:** stg_patient takes ~70s to query due to LATERAL FLATTEN re-execution. At scale, convert to incremental tables.
 
 ---
 
-## ADR-005: Comma-Syntax LATERAL FLATTEN over Correlated Subqueries
+## ADR-005: Comma-Syntax LATERAL FLATTEN
 
-**Decision:** All FHIR VARIANT navigation uses comma-syntax LATERAL FLATTEN in the FROM clause with `MAX(CASE WHEN ...)` aggregation for pivot operations. Correlated subqueries are not used.
+**Decision:** All FHIR VARIANT navigation uses comma-syntax LATERAL FLATTEN. Correlated subqueries not used.
 
-**Rationale:** Snowflake does not support correlated subqueries that reference outer LATERAL FLATTEN aliases. This was discovered during `stg_patient` development. The comma-syntax pattern is Snowflake's native approach and performs well.
+**Rationale:** Snowflake does not support correlated subqueries referencing outer LATERAL FLATTEN aliases. Discovered during stg_patient development.
 
-**Pattern established:**
+**Pattern:**
 ```sql
--- Extracting values from nested FHIR extensions
 FROM source_table b,
     LATERAL FLATTEN(input => b.raw_bundle:entry) f,
     LATERAL FLATTEN(input => f.value:resource:extension) ext
--- Pivot back to one row per patient
 MAX(CASE WHEN ext.value:url::STRING LIKE '%us-core-birthsex%'
     THEN ext.value:valueCode::STRING END) AS birth_sex
 GROUP BY [all non-aggregated columns]
@@ -88,104 +77,106 @@ GROUP BY [all non-aggregated columns]
 
 ---
 
-## ADR-006: Patient Reference Parsing
+## ADR-006: FHIR Reference Parsing
 
-**Decision:** Patient references in FHIR resources are parsed using `SPLIT_PART(..., 'urn:uuid:', 2)`. Organization and practitioner references use `SPLIT_PART(..., '|', 2)` to extract the identifier after the system pipe.
+**Decision:** Patient references parsed via `SPLIT_PART(..., 'urn:uuid:', 2)`. Practitioner/org references via `SPLIT_PART(..., '|', 2)`.
 
-**Rationale:** Synthea uses `urn:uuid:` prefix for patient subject references and pipe-delimited system|value format for practitioner NPI references. This is consistent across all bundles in the dataset.
-
-**Known limitation:** Real EHR systems may use different reference formats. Production implementation should use a macro that handles multiple reference formats gracefully.
+**Known limitation:** Real EHR systems may use different reference formats. Production should use a macro handling multiple formats.
 
 ---
 
-## ADR-007: Diabetic Cohort Definition — Hardcoded Codes
+## ADR-007: VSAC Value Sets as dbt Seeds
 
-**Decision:** Diabetic cohort currently defined using ICD-10 wildcards `E10%` (Type 1) and `E11%` (Type 2) plus five SNOMED codes.
+**Decision:** Clinical terminology sourced from VSAC and loaded as dbt seeds.
 
-**Known gap:** The official CMS122 diabetes value set (VSAC OID `2.16.840.1.113883.3.464.1003.103.12.1001`) contains 369 concepts including E08 (diabetes due to underlying condition), E09 (drug-induced diabetes), and E13 (other specified diabetes). These are excluded from the current implementation.
+**Seeds:**
+- `ref_value_sets` — full CMS eCQM download, May 2023 release (2024 performance year), 105,272 rows
+- `ref_code_system_map` — maps FHIR URI identifiers to VSAC OIDs (6 rows)
 
-**Production fix:** Register at vsac.nlm.nih.gov, download the official value set CSV, load as a dbt seed (`seeds/ref_diabetes_codes.csv`), and update `dim_patient` and `fact_condition` to JOIN against the seed rather than hardcoded codes.
+**Value sets used:**
 
----
-
-## ADR-008: is_superseded Not Implemented
-
-**Decision:** `is_superseded` column exists in all raw tables but defaults to FALSE for all rows. No supersession logic is implemented.
-
-**Rationale:** Synthea generates complete historical records in one shot. No patient bundle is updated or replaced in this dataset. Implementing supersession logic without a real incremental data source would be untested and potentially misleading.
-
-**Production fix (Project 2):** The Python ingestion pipeline should be extended with a post-load task that:
-1. Identifies newly loaded bundles for patients who already have records
-2. Sets `is_superseded = TRUE` on prior bundles for those patients
-3. All dbt staging models should add `WHERE b.is_superseded = FALSE`
-
-TODO comments marking this are present in all five staging models.
-
----
-
-## ADR-009: CQM Measurement Period as Hardcoded CTE
-
-**Decision:** Measurement period (2024-01-01 to 2024-12-31) is defined as a hardcoded CTE in each CQM model.
-
-**Production fix (Project 3):** Move to dbt variables:
-```bash
-dbt run --vars '{"measurement_year": 2024}'
-```
-
-Referenced in models as:
-```sql
-'{{ var("measurement_year") }}-01-01'::DATE AS period_start
-```
-
----
-
-## ADR-010: QI-Core Alignment
-
-**Decision:** Staging models are partially aligned with QI-Core STU 6 profiles. Full alignment not implemented.
-
-**What is aligned:**
-- US Core Patient profile fields (race, ethnicity, birth sex via extensions)
-- Encounter class, type, period, status
-- Condition clinicalStatus and verificationStatus
-- Observation effectiveDateTime (not issued) per QI-Core timing guidance
-- MedicationRequest authoredOn per QI-Core
-- Full CodeableConcept arrays preserved as `_json` VARIANT columns
-
-**Known gaps:**
-- VSAC value sets not loaded (see ADR-007)
-- Encounter.diagnosis element not extracted
-- No EMPI integration (single source, not needed for Synthea)
-- CQM logic implemented in SQL rather than CQL
-
----
-
-## ADR-011: Surrogate Keys Not Implemented
-
-**Decision:** Source system UUIDs (Synthea-generated) used as primary keys throughout.
-
-**Known gap:** In a multi-source production pipeline, source system identifiers are not globally unique. Two EHR systems could each have a resource with id `abc-123`. Surrogate keys generated via `dbt_utils.generate_surrogate_key(['source_filename', 'resource_id'])` should replace source IDs as primary keys.
-
-**Production fix:** Install `dbt_utils` package and add surrogate key generation to all staging models.
-
----
-
-## Known Technical Debt Summary
-
-| Item | Location | Priority | Notes |
+| Measure | Value Set Name | VSAC OID | Codes |
 |---|---|---|---|
-| VSAC value sets | dim_patient, fact_condition, cms122_measure | High | Requires VSAC account |
-| is_superseded logic | All staging models, ingestion pipeline | High | Project 2 |
-| Surrogate keys | All staging and mart models | Medium | dbt_utils |
-| Staging model performance | stg_* views | Medium | Convert to incremental tables at scale |
-| Measurement period parameterization | cms122_measure, cms111_measure | Low | Project 3 |
-| EMPI integration | stg_patient | Low | Multi-source only |
-| CQL-based measure validation | cms122_measure, cms111_measure | Low | Validate against Bonnie |
+| CMS122 | Diabetes | 2.16.840.1.113883.3.464.1003.103.12.1001 | 370 |
+| CMS122 | HbA1c Laboratory Test | 2.16.840.1.113883.3.464.1003.198.12.1013 | 5 |
+| CMS111 | Emergency Department E&M Visit | 2.16.840.1.113883.3.464.1003.101.12.1010 | 6 |
+
+**Filtering:** Models filter by `value_set_oid` (not name) for accuracy. OID comments provide human readability.
+
+**Validation:** Singular dbt test `assert_value_set_name_oid_one_to_one.sql` validates 1:1 relationship between value set name and OID.
+
+**Code system mapping:** FHIR uses URI-format (`http://snomed.info/sct`). VSAC uses OID-format (`2.16.840.1.113883.6.96`). `ref_code_system_map` bridges this gap.
+
+**Versioning:** CMS publishes annually. May 2023 release governs 2024 performance year. To update: replace CSV, run `dbt seed`.
+
+**Synthea finding:** Expanded value set (370 codes vs 7 prior) did not change diabetic patient counts. Synthea uses high-level codes already covered. Real EHR data uses granular ICD-10 subcategories the expanded set captures.
+
+---
+
+## ADR-008: Measure-Specific Logic in CQM Models Only
+
+**Decision:** Clinical quality measure logic (value set membership, HbA1c thresholds, ED identification) lives in CQM models, not fact tables.
+
+**Removed from fact tables:**
+- `fact_observation.is_hba1c` — CMS122-specific, now in cms122_measure CTE
+- `fact_observation.is_hba1c_poor_control` — CMS122 business logic (>9%), now in cms122_measure
+- `fact_condition.is_diabetes_condition` — CMS122-specific, dim_patient.is_diabetic serves this role
+- `fact_encounter.is_ed_encounter_vsac` — CMS111-specific, now in cms111_measure
+
+**Kept on fact/dim tables (defensible as general-purpose):**
+- `dim_patient.is_diabetic` — useful across care management, risk stratification, population health
+- `fact_encounter.is_ed_encounter` — class-based (EMER), describes encounter type
+- `fact_encounter.is_inpatient_encounter` — same
+- `fact_condition.is_active_confirmed` — clinically meaningful across all measures
+
+---
+
+## ADR-009: is_superseded Not Implemented
+
+**Decision:** Column exists, defaults FALSE. No supersession logic implemented.
+
+**Production fix (Project 2):** Post-load Airflow task sets `is_superseded = TRUE` on prior bundles for patients with new loads. All staging models add `WHERE b.is_superseded = FALSE`.
+
+---
+
+## ADR-010: Measurement Period Hardcoded
+
+**Decision:** 2024-01-01 to 2024-12-31 hardcoded as CTEs in CQM models.
+
+**Production fix (Project 3):** dbt variables — `dbt run --vars '{"measurement_year": 2024}'`
+
+---
+
+## ADR-011: QI-Core Partial Alignment
+
+**Aligned:** US Core Patient extensions, Encounter class/type/period/status, Condition clinicalStatus + verificationStatus, Observation effectiveDateTime, MedicationRequest authoredOn, full CodeableConcept arrays as VARIANT.
+
+**Gaps:** Encounter.diagnosis element, no EMPI, CQL not implemented (SQL used instead — validate against Bonnie for production).
+
+---
+
+## ADR-012: Surrogate Keys Not Implemented
+
+Synthea UUIDs used as PKs. Production requires `dbt_utils.generate_surrogate_key()` for multi-source environments.
+
+---
+
+## Known Technical Debt
+
+| Item | Location | Priority | Project |
+|---|---|---|---|
+| is_superseded logic | Staging models, ingestion pipeline | High | 2 |
+| Surrogate keys | All models | Medium | 2 |
+| Staging model performance | stg_* views | Medium | 2+ |
+| Measurement period parameterization | CQM models | Low | 3 |
+| EMPI integration | stg_patient | Low | Multi-source |
+| CQL validation (Bonnie) | CQM models | Low | Future |
 
 ---
 
 ## CMS122 Data Quality Finding
 
-Pipeline validation confirmed that the 3.9% poor control rate produced by this pipeline against Synthea data is an artifact of Synthea's synthetic HbA1c distribution, not a pipeline logic error. Synthea generates HbA1c values clustered around 5.2% mean — physiologically implausible for a diabetic population (expected mean ~7.5%). With a realistic HbA1c distribution (NHANES-based), the same pipeline logic produces ~28-32% poor control, consistent with the CMS 2024 national benchmark of 27.3%.
+Pipeline logic confirmed correct. 3.9% poor control rate is a Synthea data fidelity artifact — synthetic HbA1c values cluster around 5.2% mean vs expected 7.5% for a diabetic population. With realistic distributions, the same pipeline produces ~28-32%, consistent with CMS 2024 national benchmark of 27.3%.
 
 See `notebooks/cms122_data_quality_analysis.ipynb` for full analysis.
 
@@ -195,36 +186,20 @@ See `notebooks/cms122_data_quality_analysis.ipynb` for full analysis.
 
 ```
 healthcare-de-portfolio/
-├── pipelines/
-│   └── fhir_ingestion.py          ← Python ingestion pipeline
-├── scripts/
-│   └── dev_put_files.py           ← Dev utility: PUT files to Snowflake stage
-├── snowflake/
-│   └── ddl/
-│       ├── raw_tables.sql         ← RAW schema DDL
-│       └── stages.sql             ← Stage and file format DDL
-├── notebooks/
-│   └── cms122_data_quality_analysis.ipynb
-├── healthcare_de_portfolio/       ← dbt project
-│   ├── models/
-│   │   ├── staging/
-│   │   │   ├── sources.yml
-│   │   │   ├── schema.yml
-│   │   │   ├── stg_patient.sql
-│   │   │   ├── stg_encounter.sql
-│   │   │   ├── stg_condition.sql
-│   │   │   ├── stg_observation.sql
-│   │   │   └── stg_medication_request.sql
-│   │   └── mart/
-│   │       ├── schema.yml
-│   │       ├── dim_patient.sql
-│   │       ├── fact_encounter.sql
-│   │       ├── fact_condition.sql
-│   │       ├── fact_observation.sql
-│   │       ├── fact_medication_request.sql
-│   │       ├── cms122_measure.sql
-│   │       └── cms111_measure.sql
-│   └── dbt_project.yml
-└── docs/
-    └── architecture_decisions.md  ← this file
+├── pipelines/fhir_ingestion.py
+├── scripts/dev_put_files.py
+├── snowflake/ddl/
+│   ├── raw_tables.sql
+│   └── stages.sql
+├── notebooks/cms122_data_quality_analysis.ipynb
+├── docs/architecture_decisions.md
+└── healthcare_de_portfolio/
+    ├── seeds/
+    │   ├── ref_value_sets.csv
+    │   └── ref_code_system_map.csv
+    ├── tests/assert_value_set_name_oid_one_to_one.sql
+    ├── models/
+    │   ├── staging/ (5 models + sources.yml + schema.yml)
+    │   └── mart/ (5 fact/dim + 2 CQM + schema.yml)
+    └── dbt_project.yml
 ```
