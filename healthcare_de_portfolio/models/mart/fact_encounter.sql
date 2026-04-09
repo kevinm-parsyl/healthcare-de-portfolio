@@ -39,7 +39,7 @@ SELECT
     e.source_filename,
     e.loaded_at,
 
-    -- Patient context from dim_patient
+    -- Patient context
     p.birth_date,
     p.gender,
     p.race,

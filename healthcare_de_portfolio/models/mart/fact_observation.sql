@@ -32,26 +32,13 @@ SELECT
     o.interpretation_display,
     o.reference_range_low,
     o.reference_range_high,
-    o.is_hba1c,
     o.source_filename,
     o.loaded_at,
 
     -- Patient context
     p.birth_date,
     p.gender,
-    p.is_diabetic,
-
-    -- HbA1c poor control flag (>9% per CMS122)
-    CASE
-        WHEN o.is_hba1c = TRUE
-         AND o.value_quantity > 9.0
-        THEN TRUE
-        WHEN o.is_hba1c = TRUE
-         AND o.value_quantity IS NULL
-         AND o.data_absent_reason_code IS NOT NULL
-        THEN TRUE  -- missing result = poor control per CMS122
-        ELSE FALSE
-    END                                                 AS is_hba1c_poor_control
+    p.is_diabetic
 
 FROM {{ ref('stg_observation') }} o
 LEFT JOIN {{ ref('dim_patient') }} p

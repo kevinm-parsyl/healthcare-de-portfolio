@@ -13,3 +13,11 @@ sources:
         description: "Raw FHIR R4 practitioner bundles"
       - name: load_manifest
         description: "Batch-level ingestion audit log"
+  - name: dev
+    database: HEALTHCARE_DEV
+    schema: DEV
+    tables:
+      - name: ref_value_sets
+        description: "VSAC eCQM value sets, May 2023 release (2024 performance year)"
+      - name: ref_code_system_map
+        description: "Mapping between FHIR URI code system identifiers and VSAC OIDs"

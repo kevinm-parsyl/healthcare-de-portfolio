@@ -5,32 +5,21 @@
 }}
 
 -- Diabetic patient cohort dimension
--- Includes all patients with at least one active confirmed diabetes diagnosis
--- Diabetes identified by SNOMED or ICD-10 codes per CMS122 value sets
+-- Diabetes cohort sourced from VSAC value set OID 2.16.840.1.113883.3.464.1003.103.12.1001
+-- Code system mapping via ref_code_system_map (FHIR URI → VSAC OID)
 
 WITH diabetic_patients AS (
     SELECT DISTINCT
-        patient_id
-    FROM {{ ref('stg_condition') }}
-    WHERE is_active_confirmed = TRUE
-        AND (
-            -- SNOMED diabetes codes
-            (condition_code_system = 'http://snomed.info/sct'
-             AND condition_code IN (
-                '44054006',  -- Type 2 diabetes mellitus
-                '73211009',  -- Diabetes mellitus
-                '46635009',  -- Type 1 diabetes mellitus
-                '31321000119102', -- Type 2 in obesity
-                '368581000119106' -- Type 2 with hyperglycemia
-             ))
-            OR
-            -- ICD-10 diabetes codes (E10* = Type 1, E11* = Type 2)
-            (condition_code_system = 'http://hl7.org/fhir/sid/icd-10-cm'
-             AND (
-                 condition_code LIKE 'E10%'
-                 OR condition_code LIKE 'E11%'
-             ))
-        )
+        c.patient_id
+    FROM {{ ref('stg_condition') }} c
+    INNER JOIN {{ ref('ref_code_system_map') }} csm
+        ON csm.fhir_uri = c.condition_code_system
+    INNER JOIN {{ ref('ref_value_sets') }} vs
+        -- Diabetes (VSAC OID 2.16.840.1.113883.3.464.1003.103.12.1001)
+        ON vs.value_set_oid = '2.16.840.1.113883.3.464.1003.103.12.1001'
+        AND vs.code = c.condition_code
+        AND vs.code_system_oid = csm.vsac_oid
+    WHERE c.is_active_confirmed = TRUE
 )
 
 SELECT
@@ -62,6 +51,7 @@ SELECT
     p.identifiers_json,
 
     -- Diabetic cohort flag
+    -- Sourced from VSAC Diabetes value set, not hardcoded codes
     CASE WHEN d.patient_id IS NOT NULL
         THEN TRUE ELSE FALSE
     END                                     AS is_diabetic,

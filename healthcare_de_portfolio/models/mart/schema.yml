@@ -92,14 +92,6 @@ models:
               values: [true, false]
               severity: error
 
-      - name: is_diabetes_condition
-        tests:
-          - not_null:
-              severity: error
-          - accepted_values:
-              values: [true, false]
-              severity: error
-
   - name: fact_observation
     description: "Observation fact table. One row per observation."
     columns:
@@ -118,22 +110,6 @@ models:
               to: ref('dim_patient')
               field: patient_id
               severity: warn
-
-      - name: is_hba1c
-        tests:
-          - not_null:
-              severity: error
-          - accepted_values:
-              values: [true, false]
-              severity: error
-
-      - name: is_hba1c_poor_control
-        tests:
-          - not_null:
-              severity: error
-          - accepted_values:
-              values: [true, false]
-              severity: error
 
   - name: fact_medication_request
     description: "MedicationRequest fact table. One row per prescription."

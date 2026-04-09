@@ -7,11 +7,8 @@
 -- CMS122: Diabetes: Hemoglobin A1c (HbA1c) Poor Control (>9%)
 -- Measurement period: 2024 calendar year
 -- Higher rate = worse performance (inverse measure)
--- Aligned with QI-Core STU 6 / CMS122v12
-
--- Measurement period configuration
--- TODO Project 3: Move to dbt variables for parameterization
---     dbt run --vars '{"measurement_year": 2024}'
+-- Value sets sourced from VSAC eCQM Update 2023-05-04 (2024 performance year)
+-- TODO Project 3: Move measurement period to dbt variables
 
 WITH measurement_period AS (
     SELECT
@@ -19,8 +16,7 @@ WITH measurement_period AS (
         '2024-12-31'::DATE AS period_end
 ),
 
--- Initial population and denominator:
--- Diabetic patients aged 18-75 with qualifying encounter during measurement period
+-- Qualifying encounters during measurement period
 qualifying_encounters AS (
     SELECT DISTINCT
         fe.patient_id
@@ -31,6 +27,7 @@ qualifying_encounters AS (
         AND fe.status = 'finished'
 ),
 
+-- Denominator: diabetic patients 18-75, alive, with qualifying encounter
 denominator AS (
     SELECT
         p.patient_id,
@@ -47,28 +44,47 @@ denominator AS (
         AND p.patient_id IN (SELECT patient_id FROM qualifying_encounters)
 ),
 
--- Most recent HbA1c result per patient during measurement period
-most_recent_hba1c AS (
+-- HbA1c observations during measurement period
+-- Identified via VSAC value set OID 2.16.840.1.113883.3.464.1003.198.12.1013
+hba1c_in_period AS (
     SELECT
-        fo.patient_id,
-        fo.value_quantity                               AS hba1c_value,
-        fo.effective_datetime                           AS hba1c_date,
-        fo.data_absent_reason_code,
-        fo.is_hba1c_poor_control,
-        ROW_NUMBER() OVER (
-            PARTITION BY fo.patient_id
-            ORDER BY fo.effective_datetime DESC
-        )                                               AS rn
-    FROM {{ ref('fact_observation') }} fo
+        o.patient_id,
+        o.observation_id,
+        o.observation_code,
+        o.value_quantity                                AS hba1c_value,
+        o.effective_datetime                            AS hba1c_date,
+        o.data_absent_reason_code,
+        o.status
+    FROM {{ ref('fact_observation') }} o
+    INNER JOIN {{ ref('ref_code_system_map') }} csm
+        ON csm.fhir_uri = o.observation_code_system
+    INNER JOIN {{ ref('ref_value_sets') }} vs
+        -- HbA1c Laboratory Test
+        -- (VSAC OID 2.16.840.1.113883.3.464.1003.198.12.1013)
+        ON vs.value_set_oid = '2.16.840.1.113883.3.464.1003.198.12.1013'
+        AND vs.code = o.observation_code
+        AND vs.code_system_oid = csm.vsac_oid
     CROSS JOIN measurement_period mp
-    WHERE fo.is_hba1c = TRUE
-        AND fo.effective_datetime::DATE
+    WHERE o.effective_datetime::DATE
             BETWEEN mp.period_start AND mp.period_end
-        AND fo.status = 'final'
+        AND o.status = 'final'
 ),
 
--- Numerator:
--- Patients whose most recent HbA1c > 9% OR no HbA1c result during period
+-- Most recent HbA1c per patient during measurement period
+most_recent_hba1c AS (
+    SELECT
+        patient_id,
+        hba1c_value,
+        hba1c_date,
+        data_absent_reason_code,
+        ROW_NUMBER() OVER (
+            PARTITION BY patient_id
+            ORDER BY hba1c_date DESC
+        )                                               AS rn
+    FROM hba1c_in_period
+),
+
+-- Numerator: poor control or no result
 numerator AS (
     SELECT
         d.patient_id,
@@ -86,13 +102,12 @@ numerator AS (
     LEFT JOIN most_recent_hba1c h
         ON d.patient_id = h.patient_id
         AND h.rn = 1
-    WHERE h.patient_id IS NULL          -- no HbA1c result
-       OR h.hba1c_value > 9.0          -- poor control
+    WHERE h.patient_id IS NULL
+       OR h.hba1c_value > 9.0
        OR (h.hba1c_value IS NULL
-           AND h.data_absent_reason_code IS NOT NULL)  -- absent result
+           AND h.data_absent_reason_code IS NOT NULL)
 )
 
--- Final measure output — one row per patient in denominator
 SELECT
     d.patient_id,
     d.birth_date,
@@ -101,24 +116,14 @@ SELECT
     d.ethnicity,
     mp.period_start                                     AS measurement_period_start,
     mp.period_end                                       AS measurement_period_end,
-
-    -- Denominator flag
     TRUE                                                AS in_denominator,
-
-    -- Numerator flag
     CASE WHEN n.patient_id IS NOT NULL
         THEN TRUE ELSE FALSE
     END                                                 AS in_numerator,
-
-    -- Numerator reason for auditability
     n.numerator_reason,
-
-    -- Most recent HbA1c details
     h.hba1c_value,
     h.hba1c_date,
     h.data_absent_reason_code,
-
-    -- Measure result per patient
     CASE WHEN n.patient_id IS NOT NULL
         THEN 'POOR_CONTROL' ELSE 'CONTROLLED'
     END                                                 AS measure_result

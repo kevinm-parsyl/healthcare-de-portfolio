@@ -31,21 +31,7 @@ SELECT
     p.gender,
     p.race,
     p.ethnicity,
-    p.is_diabetic,
-
-    -- Diabetes flag on this specific condition
-    CASE
-        WHEN c.condition_code_system = 'http://snomed.info/sct'
-         AND c.condition_code IN (
-             '44054006', '73211009', '46635009',
-             '31321000119102', '368581000119106'
-         )
-        THEN TRUE
-        WHEN c.condition_code_system = 'http://hl7.org/fhir/sid/icd-10-cm'
-         AND (c.condition_code LIKE 'E10%' OR c.condition_code LIKE 'E11%')
-        THEN TRUE
-        ELSE FALSE
-    END                                                 AS is_diabetes_condition
+    p.is_diabetic
 
 FROM {{ ref('stg_condition') }} c
 LEFT JOIN {{ ref('dim_patient') }} p
