@@ -15,7 +15,7 @@ CREATE OR REPLACE TABLE HEALTHCARE_DEV.RAW.LOAD_MANIFEST (
     datetime_loaded TIMESTAMP_TZ    NOT NULL DEFAULT CURRENT_TIMESTAMP(),
     loaded_by       STRING          NOT NULL DEFAULT CURRENT_USER(),
     loaded_role     STRING          NOT NULL DEFAULT CURRENT_ROLE(),
-    CONSTRAINT pk_load_manifest PRIMARY KEY (load_id)
+    CONSTRAINT pk_load_manifest PRIMARY KEY (load_id, stage_name)
 );
 
 -- Raw patient bundles
@@ -30,9 +30,7 @@ CREATE OR REPLACE TABLE HEALTHCARE_DEV.RAW.BUNDLE (
     datetime_loaded TIMESTAMP_TZ    NOT NULL DEFAULT CURRENT_TIMESTAMP(),
     loaded_by       STRING          NOT NULL DEFAULT CURRENT_USER(),
     loaded_role     STRING          NOT NULL DEFAULT CURRENT_ROLE(),
-    CONSTRAINT pk_bundle PRIMARY KEY (raw_bundle_id),
-    CONSTRAINT fk_bundle_manifest FOREIGN KEY (load_id)
-        REFERENCES HEALTHCARE_DEV.RAW.LOAD_MANIFEST(load_id)
+    CONSTRAINT pk_bundle PRIMARY KEY (raw_bundle_id) 
 )
 CLUSTER BY (source_filename);
 
@@ -48,9 +46,7 @@ CREATE OR REPLACE TABLE HEALTHCARE_DEV.RAW.ORGANIZATION (
     datetime_loaded     TIMESTAMP_TZ NOT NULL DEFAULT CURRENT_TIMESTAMP(),
     loaded_by           STRING      NOT NULL DEFAULT CURRENT_USER(),
     loaded_role         STRING      NOT NULL DEFAULT CURRENT_ROLE(),
-    CONSTRAINT pk_organization PRIMARY KEY (raw_organization_id),
-    CONSTRAINT fk_organization_manifest FOREIGN KEY (load_id)
-        REFERENCES HEALTHCARE_DEV.RAW.LOAD_MANIFEST(load_id)
+    CONSTRAINT pk_organization PRIMARY KEY (raw_organization_id) 
 )
 CLUSTER BY (source_filename);
 
@@ -66,8 +62,6 @@ CREATE OR REPLACE TABLE HEALTHCARE_DEV.RAW.PRACTITIONER (
     datetime_loaded     TIMESTAMP_TZ NOT NULL DEFAULT CURRENT_TIMESTAMP(),
     loaded_by           STRING      NOT NULL DEFAULT CURRENT_USER(),
     loaded_role         STRING      NOT NULL DEFAULT CURRENT_ROLE(),
-    CONSTRAINT pk_practitioner PRIMARY KEY (raw_practitioner_id),
-    CONSTRAINT fk_practitioner_manifest FOREIGN KEY (load_id)
-        REFERENCES HEALTHCARE_DEV.RAW.LOAD_MANIFEST(load_id)
+    CONSTRAINT pk_practitioner PRIMARY KEY (raw_practitioner_id) 
 )
 CLUSTER BY (source_filename);
